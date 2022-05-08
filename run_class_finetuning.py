@@ -102,7 +102,7 @@ def get_args_parser():
 
     parser.add_argument('--warmup_lr', type=float, default=1e-6, metavar='LR',
                         help='warmup learning rate (default: 1e-6)')
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=1e-8, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 
     parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
@@ -160,10 +160,10 @@ def get_args_parser():
 
     # yaoyinuo 2022.5.2
     # Dataset parameters
-    parser.add_argument('--data_path', default='/home/ccvl269/data/ImageNet/', type=str,
-                        help='dataset path')
-    # parser.add_argument('--data_path', default='/home/yinuo/data/chestxray/', type=str,
+    # parser.add_argument('--data_path', default='/home/ccvl269/data/ImageNet/', type=str,
     #                     help='dataset path')
+    parser.add_argument('--data_path', default='/home/yinuo/data/chestxray/', type=str,
+                        help='dataset path')
     parser.add_argument('--eval_data_path', default=None, type=str,
                         help='dataset path for evaluation')
     parser.add_argument('--nb_classes', default=0, type=int,
@@ -245,24 +245,24 @@ def main(args, parser):
     cudnn.benchmark = True
 
     # yaoyinuo 2022.5.2
-    dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
-    if args.disable_eval_during_finetuning:    # false
-        dataset_val = None
-    else:
-        dataset_val, _ = build_dataset(is_train=False, args=args)
+    # dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
+    # if args.disable_eval_during_finetuning:    # false
+    #     dataset_val = None
+    # else:
+    #     dataset_val, _ = build_dataset(is_train=False, args=args)
 
-    # pathDirData = args.data_path
-    # pathFileTrain = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/train_1.txt'
-    # pathFileVal = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/val_1.txt'
-    # pathFileTest = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/test_1.txt'
-    # transform_train = create_transform(224, is_training=True)
-    # transform_val = create_transform(224, is_training=False)
-    # dataset_train = DatasetGenerator(pathDirData, pathFileTrain, transform_train) 
-    # dataset_val = DatasetGenerator(pathDirData, pathFileVal, transform_val)
-    # dataset_test = DatasetGenerator(pathDirData, pathFileTest, transform_val)
-    # print("Train data length:", len(dataset_train))
-    # print("Valid data length:", len(dataset_val))
-    # print("Test data length:", len(dataset_test))
+    pathDirData = args.data_path
+    pathFileTrain = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/train_1.txt'
+    pathFileVal = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/val_1.txt'
+    pathFileTest = '/home/yinuo/contrastive/CLIP-main/mine/myChestxray/dataset/test_1.txt'
+    transform_train = create_transform(224, is_training=True)
+    transform_val = create_transform(224, is_training=False)
+    dataset_train = DatasetGenerator(pathDirData, pathFileTrain, transform_train) 
+    dataset_val = DatasetGenerator(pathDirData, pathFileVal, transform_val)
+    dataset_test = DatasetGenerator(pathDirData, pathFileTest, transform_val)
+    print("Train data length:", len(dataset_train))
+    print("Valid data length:", len(dataset_val))
+    print("Test data length:", len(dataset_test))
 
 
     if True:  # args.distributed:
@@ -437,6 +437,10 @@ def main(args, parser):
                     new_rel_pos_bias = torch.cat((rel_pos_bias, extra_tokens), dim=0)
                     checkpoint_model[key] = new_rel_pos_bias
 
+        # yaoyinuo 2022.5.7
+        in_features = model.head.in_features
+        model.head = nn.Linear(in_features, 14)
+
         # interpolate position embedding
         if 'pos_embed' in checkpoint_model:
             pos_embed_checkpoint = checkpoint_model['pos_embed']
@@ -546,7 +550,9 @@ def main(args, parser):
     elif args.smoothing > 0.:      # 0.1
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        # yaoyinuo 2022.5.7
+        # criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.BCEWithLogitsLoss()
 
     print("criterion = %s" % str(criterion))
 
@@ -561,7 +567,8 @@ def main(args, parser):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    max_accuracy = 0.0
+    # max_accuracy = 0.0
+    max_auc = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -580,20 +587,46 @@ def main(args, parser):
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
         if data_loader_val is not None:
-            test_stats = evaluate(data_loader_val, model, device)
-            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-            if max_accuracy < test_stats["acc1"]:
-                max_accuracy = test_stats["acc1"]
+            test_stats = evaluate(data_loader_val, model, device)   # auc_mean
+            # yaoyinuo 2022.5.7
+            # print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            # if max_accuracy < test_stats["acc1"]:
+            #     max_accuracy = test_stats["acc1"]
+            print("Mean AUC of the network on the {} test images: {:.4f}".format(len(dataset_val), test_stats['auc_mean']))
+            # #########################################################
+            print("###################################################################")
+            print(test_stats['auc_mean'])
+            print(max_auc)
+            print(type(test_stats['auc_mean']))
+            print(type(max_auc))
+            if max_auc < test_stats['auc_mean']:
+                max_auc = test_stats['auc_mean']
                 if args.output_dir and args.save_ckpt:
                     utils.save_model(
                         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
 
-            print(f'Max accuracy: {max_accuracy:.2f}%')
+            # print(f'Max accuracy: {max_accuracy:.2f}%')
+
             if log_writer is not None:
-                log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
-                log_writer.update(test_acc5=test_stats['acc5'], head="perf", step=epoch)
+                # log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
+                # log_writer.update(test_acc5=test_stats['acc5'], head="perf", step=epoch)
+                log_writer.update(meanAUC=test_stats['auc_mean'], head="meanAUC", step=epoch)
                 log_writer.update(test_loss=test_stats['loss'], head="perf", step=epoch)
+                log_writer.update(AUC1=test_stats['AUC1'], head="AUC1", step=epoch)
+                log_writer.update(AUC2=test_stats['AUC2'], head="AUC2", step=epoch)
+                log_writer.update(AUC3=test_stats['AUC3'], head="AUC3", step=epoch)
+                log_writer.update(AUC4=test_stats['AUC4'], head="AUC4", step=epoch)
+                log_writer.update(AUC5=test_stats['AUC5'], head="AUC5", step=epoch)
+                log_writer.update(AUC6=test_stats['AUC6'], head="AUC6", step=epoch)
+                log_writer.update(AUC7=test_stats['AUC7'], head="AUC7", step=epoch)
+                log_writer.update(AUC8=test_stats['AUC8'], head="AUC8", step=epoch)
+                log_writer.update(AUC9=test_stats['AUC9'], head="AUC9", step=epoch)
+                log_writer.update(AUC10=test_stats['AUC10'], head="AUC10", step=epoch)
+                log_writer.update(AUC11=test_stats['AUC11'], head="AUC11", step=epoch)
+                log_writer.update(AUC12=test_stats['AUC12'], head="AUC12", step=epoch)
+                log_writer.update(AUC13=test_stats['AUC13'], head="AUC13", step=epoch)
+                log_writer.update(AUC14=test_stats['AUC14'], head="AUC14", step=epoch)
 
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          **{f'test_{k}': v for k, v in test_stats.items()},
@@ -601,7 +634,7 @@ def main(args, parser):
                          'n_parameters': n_parameters}
         else:
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         # **{f'test_{k}': v for k, v in test_stats.items()},
+                         **{f'test_{k}': v for k, v in test_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
 

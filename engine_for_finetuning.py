@@ -19,12 +19,12 @@ from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 
 import utils
+from sklearn.metrics import roc_auc_score
+import numpy as np
 
 
 def train_class_batch(model, samples, target, criterion):
     outputs = model(samples)
-    # yaoyinuo 2022.5.2
-    # target = target.type(torch.int64)
     loss = criterion(outputs, target)
     return loss, outputs
 
@@ -117,12 +117,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         torch.cuda.synchronize()
 
-        if mixup_fn is None:
-            class_acc = (output.max(-1)[-1] == targets).float().mean()
-        else:
-            class_acc = None
+
+        # if mixup_fn is None:
+        #     class_acc = (output.max(-1)[-1] == targets).float().mean()
+        # else:
+        #     class_acc = None
         metric_logger.update(loss=loss_value)
-        metric_logger.update(class_acc=class_acc)
+        # metric_logger.update(class_acc=class_acc)
+        # metric_logger.update(auc=aucs)
+        # metric_logger.update(meanAUC=auc_mean)
         metric_logger.update(loss_scale=loss_scale_value)
         min_lr = 10.
         max_lr = 0.
@@ -141,7 +144,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         if log_writer is not None:
             log_writer.update(loss=loss_value, head="loss")
-            log_writer.update(class_acc=class_acc, head="loss")
+            # log_writer.update(class_acc=class_acc, head="loss")
             log_writer.update(loss_scale=loss_scale_value, head="opt")
             log_writer.update(lr=max_lr, head="opt")
             log_writer.update(min_lr=min_lr, head="opt")
@@ -158,34 +161,74 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 @torch.no_grad()
 def evaluate(data_loader, model, device):
-    criterion = torch.nn.CrossEntropyLoss()
+    # yaoyinuo 2022.5.7
+    criterion = torch.nn.BCEWithLogitsLoss()
+    # criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
 
     # switch to evaluation mode
     model.eval()
+    # yaoyinuo 2022.5.7
+    outGT = torch.FloatTensor().to(device)
+    outPRED = torch.FloatTensor().to(device)
 
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
         target = batch[-1]
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
+        # yaoyinuo 2022.5.7
+        outGT = torch.cat((outGT, target), 0)   # ground truth
 
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
+            outPRED = torch.cat((outPRED, output), 0)
             loss = criterion(output, target)
-
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
-        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
-        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+        # metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        # metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+
+
+    output_np = outPRED.detach().cpu().numpy()
+    tgt_np = outGT.detach().cpu().numpy()
+
+    # yaoyinuo 2022.5.7
+    # acc1, acc5 = accuracy(output, target, topk=(1, 5))
+    aucs = []
+    for i in range(14):
+        aucs.append(roc_auc_score(tgt_np[:, i], output_np[:, i]))
+        
+    auc_mean = np.array(aucs).mean()
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
-          .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+    metric_logger.update(AUC1=aucs[0])
+    metric_logger.update(AUC2=aucs[1])
+    metric_logger.update(AUC3=aucs[2])
+    metric_logger.update(AUC4=aucs[3])
+    metric_logger.update(AUC5=aucs[4])
+    metric_logger.update(AUC6=aucs[5])
+    metric_logger.update(AUC7=aucs[6])
+    metric_logger.update(AUC8=aucs[7])
+    metric_logger.update(AUC9=aucs[8])
+    metric_logger.update(AUC10=aucs[9])
+    metric_logger.update(AUC11=aucs[10])
+    metric_logger.update(AUC12=aucs[11])
+    metric_logger.update(AUC13=aucs[12])
+    metric_logger.update(AUC14=aucs[13])
+
+    # metric_logger.update(auc=aucs)
+    metric_logger.update(auc_mean=auc_mean)
+    print("AUC:")
+    print(aucs)
+    print("mean AUC: {:.4f}".format(auc_mean))
+    # print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+    #       .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # return auc_mean
